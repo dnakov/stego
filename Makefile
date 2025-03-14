@@ -1,6 +1,6 @@
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -I/opt/homebrew/opt/openssl@3/include
-LDFLAGS = -lm -lz -L/opt/homebrew/opt/openssl@3/lib -lcrypto
+CFLAGS = -Wall -Wextra -O2
+LDFLAGS = -lm -lz -lcurl
 
 SRCS = main.c stego.c image.c png.c
 OBJS = $(SRCS:.c=.o)

@@ -6,6 +6,7 @@ A simple steganography tool that hides data in PNG images using LSB (Least Signi
 
 - Hide files or text in PNG images
 - Extract hidden data from images
+- Extract directly from PNG URLs
 - Optional password encryption using ChaCha20-Poly1305
 - Efficient bit usage (1 LSB per channel across 3 pixels)
 - No visible artifacts in the output image
@@ -14,6 +15,16 @@ A simple steganography tool that hides data in PNG images using LSB (Least Signi
 
 ```bash
 make
+```
+
+Requires:
+- libcurl
+- zlib
+- gcc/clang
+
+On macOS:
+```bash
+brew install curl
 ```
 
 ## Usage
@@ -31,6 +42,11 @@ stego hide -t "Hello World" output.png -p secret
 Extract data:
 ```bash
 stego extract output.png extracted.txt -p secret
+```
+
+Extract from URL:
+```bash
+stego -u https://example.com/secret.png -o extracted.txt -p secret
 ```
 
 ## How it Works
