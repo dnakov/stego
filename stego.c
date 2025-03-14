@@ -376,284 +376,282 @@ static bool decrypt_data(const unsigned char* in, size_t in_len,
 }
 
 static void embed_byte(unsigned char* pixels, uint8_t byte) {
-    // Use 1 LSB from each channel, need 3 pixels for 8 bits
-    // First pixel: bits 7,6,5
-    pixels[0] = (pixels[0] & 0xFE) | ((byte >> 7) & 0x01);  // bit 7
-    pixels[1] = (pixels[1] & 0xFE) | ((byte >> 6) & 0x01);  // bit 6
-    pixels[2] = (pixels[2] & 0xFE) | ((byte >> 5) & 0x01);  // bit 5
+    // Use 2 LSBs from each channel, need only 2 pixels for 8 bits
+    // First pixel: 6 bits
+    pixels[0] = (pixels[0] & 0xFC) | ((byte >> 6) & 0x03);  // bits 7,6
+    pixels[1] = (pixels[1] & 0xFC) | ((byte >> 4) & 0x03);  // bits 5,4
+    pixels[2] = (pixels[2] & 0xFC) | ((byte >> 2) & 0x03);  // bits 3,2
     
-    // Second pixel: bits 4,3,2
-    pixels[3] = (pixels[3] & 0xFE) | ((byte >> 4) & 0x01);  // bit 4
-    pixels[4] = (pixels[4] & 0xFE) | ((byte >> 3) & 0x01);  // bit 3
-    pixels[5] = (pixels[5] & 0xFE) | ((byte >> 2) & 0x01);  // bit 2
-    
-    // Third pixel: bits 1,0 (last channel unused)
-    pixels[6] = (pixels[6] & 0xFE) | ((byte >> 1) & 0x01);  // bit 1
-    pixels[7] = (pixels[7] & 0xFE) | (byte & 0x01);         // bit 0
+    // Second pixel: 2 bits (first channel only)
+    pixels[3] = (pixels[3] & 0xFC) | (byte & 0x03);         // bits 1,0
 }
 
 static uint8_t extract_byte(const unsigned char* pixels) {
-    // Extract 1 LSB from each channel
     uint8_t byte = 0;
-    byte |= (pixels[0] & 0x01) << 7;  // bit 7
-    byte |= (pixels[1] & 0x01) << 6;  // bit 6
-    byte |= (pixels[2] & 0x01) << 5;  // bit 5
-    byte |= (pixels[3] & 0x01) << 4;  // bit 4
-    byte |= (pixels[4] & 0x01) << 3;  // bit 3
-    byte |= (pixels[5] & 0x01) << 2;  // bit 2
-    byte |= (pixels[6] & 0x01) << 1;  // bit 1
-    byte |= (pixels[7] & 0x01);       // bit 0
+    // Extract 2 LSBs from each channel
+    byte |= (pixels[0] & 0x03) << 6;  // bits 7,6
+    byte |= (pixels[1] & 0x03) << 4;  // bits 5,4
+    byte |= (pixels[2] & 0x03) << 2;  // bits 3,2
+    byte |= (pixels[3] & 0x03);       // bits 1,0
     return byte;
 }
 
 // Embed data in LSBs
 static bool embed_data(Image* img, const unsigned char* data, size_t data_len) {
+    // Check if image has enough space (2 pixels per byte)
+    size_t max_bytes = ((size_t)img->width * img->height * 3) / 4;
+    if (data_len + 4 > max_bytes) {
+        return false;
+    }
+
     // Write length (4 bytes)
     for (size_t i = 0; i < 4; i++) {
-        if (i * 8 + 7 >= (size_t)img->width * img->height * 3) {
-            return false;
-        }
-        embed_byte(&img->data[i * 8], (data_len >> (i * 8)) & 0xFF);
+        embed_byte(&img->data[i * 4], (data_len >> (i * 8)) & 0xFF);
     }
     
     // Write data
-    size_t pixel_idx = 32; // 4 bytes * 8 bytes per byte
+    size_t pixel_idx = 16; // 4 bytes * 4 pixels per byte
     for (size_t i = 0; i < data_len; i++) {
-        if (pixel_idx + 7 >= (size_t)img->width * img->height * 3) {
-            return false;
-        }
         embed_byte(&img->data[pixel_idx], data[i]);
-        pixel_idx += 8;
-    }
-    
-    // Write delimiter
-    for (size_t i = 0; i < DELIMITER_LEN; i++) {
-        if (pixel_idx + 7 >= (size_t)img->width * img->height * 3) {
-            return false;
-        }
-        embed_byte(&img->data[pixel_idx], DELIMITER[i]);
-        pixel_idx += 8;
+        pixel_idx += 4;
     }
     
     return true;
 }
 
 // Extract data from LSBs
-static unsigned char* extract_data(const Image* img, size_t* out_len) {
+static bool extract_data(const Image* img, unsigned char** out_data, size_t* out_len) {
     // Read length (4 bytes)
-    uint32_t size = 0;
+    size_t data_len = 0;
     for (size_t i = 0; i < 4; i++) {
-        if (i * 8 + 7 >= (size_t)img->width * img->height * 3) {
-            return NULL;
-        }
-        size |= (uint32_t)extract_byte(&img->data[i * 8]) << (i * 8);
+        data_len |= (size_t)extract_byte(&img->data[i * 4]) << (i * 8);
     }
     
-    // Allocate buffer
-    unsigned char* data = malloc(size);
-    if (!data) return NULL;
+    // Validate length
+    size_t max_bytes = ((size_t)img->width * img->height * 3) / 4;
+    if (data_len > max_bytes - 4) {
+        return false;
+    }
     
     // Extract data
-    size_t pixel_idx = 32; // 4 bytes * 8 bytes per byte
-    for (uint32_t i = 0; i < size; i++) {
-        if (pixel_idx + 7 >= (size_t)img->width * img->height * 3) {
-            free(data);
-            return NULL;
-        }
-        data[i] = extract_byte(&img->data[pixel_idx]);
-        pixel_idx += 8;
+    *out_data = malloc(data_len);
+    if (!*out_data) return false;
+    *out_len = data_len;
+    
+    size_t pixel_idx = 16; // 4 bytes * 4 pixels per byte
+    for (size_t i = 0; i < data_len; i++) {
+        (*out_data)[i] = extract_byte(&img->data[pixel_idx]);
+        pixel_idx += 4;
     }
     
-    // Verify delimiter
-    char delimiter[DELIMITER_LEN + 1] = {0};
-    for (size_t i = 0; i < DELIMITER_LEN; i++) {
-        if (pixel_idx + 7 >= (size_t)img->width * img->height * 3) {
-            free(data);
-            return NULL;
-        }
-        delimiter[i] = extract_byte(&img->data[pixel_idx]);
-        pixel_idx += 8;
-    }
-    
-    if (strcmp(delimiter, DELIMITER) != 0) {
-        printf("Warning: No delimiter found, data may be incomplete\n");
-    }
-    
-    *out_len = size;
-    return data;
+    return true;
 }
 
-// Hide data in a new image
 bool hide(const char* input_file, const char* output_file, const char* password) {
-    printf("Opening input file: %s\n", input_file);
-    
     // Read input file
     FILE* f = fopen(input_file, "rb");
     if (!f) {
-        perror("Failed to open input file");
+        printf("Failed to open input file\n");
         return false;
     }
     
-    // Get file size
     fseek(f, 0, SEEK_END);
     size_t data_len = ftell(f);
     fseek(f, 0, SEEK_SET);
-    printf("Input file size: %zu bytes\n", data_len);
+    printf("Input size: %zu bytes\n", data_len);
     
-    // Read data
     unsigned char* data = malloc(data_len);
     if (!data) {
-        perror("Failed to allocate memory");
+        printf("Failed to allocate input buffer\n");
         fclose(f);
         return false;
     }
     
-    size_t bytes_read = fread(data, 1, data_len, f);
-    if (bytes_read != data_len) {
-        perror("Failed to read input file");
-        fclose(f);
+    if (fread(data, 1, data_len, f) != data_len) {
+        printf("Failed to read input file\n");
         free(data);
+        fclose(f);
         return false;
     }
-    printf("Read %zu bytes from input file\n", bytes_read);
     fclose(f);
     
-    // Encrypt data if password provided
-    unsigned char* encrypted = NULL;
-    size_t encrypted_len = 0;
-    if (password) {
-        printf("Encrypting data with password\n");
-        unsigned char key[CHACHA_KEY_SIZE];
-        derive_key(password, key);
-        if (!encrypt_data(data, data_len, &encrypted, &encrypted_len, key)) {
-            free(data);
-            return false;
-        }
-        free(data);
-        data = encrypted;
-        data_len = encrypted_len;
-        printf("Data encrypted, new size: %zu bytes\n", data_len);
-    }
-    
-    // Calculate required image size
-    size_t total_bytes = data_len + 4 + DELIMITER_LEN;  // Data + length + delimiter
-    size_t required_pixels = (total_bytes * 8 + 2) / 3;  // 8 bytes per byte of data (using 1 LSB per channel)
-    int width = ceil(sqrt(required_pixels));
-    int height = (required_pixels + width - 1) / width;
-    
-    printf("Creating %dx%d image to fit %zu bytes...\n", width, height, data_len);
-    
-    // Create new image with pattern
-    Image* img = image_create(width, height);
-    if (!img) {
-        perror("Failed to create image");
+    // Compress data
+    uLong comp_bound = compressBound(data_len);
+    unsigned char* comp_data = malloc(comp_bound);
+    if (!comp_data) {
+        printf("Failed to allocate compression buffer\n");
         free(data);
         return false;
     }
-    printf("Image created successfully\n");
     
-    // Fill with pattern that has LSBs=0
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            int idx = (y * width + x) * 3;
-            // Create colors based on position and nearby data bytes
-            size_t data_idx = (y * width + x) / 3;
-            unsigned char val = (data_idx < data_len) ? data[data_idx] : 0;
-            unsigned char prev = (data_idx > 0) ? data[data_idx-1] : 0;
-            unsigned char next = (data_idx+1 < data_len) ? data[data_idx+1] : 0;
-            
-            // Generate pattern keeping LSBs=0
-            img->data[idx] = ((val + x + prev) & 0xFE);
-            img->data[idx+1] = ((val + y + next) & 0xFE);
-            img->data[idx+2] = ((val + x + y) & 0xFE);
+    uLong comp_len = comp_bound;
+    if (compress2(comp_data, &comp_len, data, data_len, Z_BEST_COMPRESSION) != Z_OK) {
+        printf("Compression failed\n");
+        free(comp_data);
+        free(data);
+        return false;
+    }
+    printf("Compressed size: %lu bytes\n", comp_len);
+    free(data);
+    
+    // Encrypt compressed data if password provided
+    unsigned char* final_data;
+    size_t final_len;
+    
+    if (password) {
+        printf("Encrypting with password\n");
+        unsigned char key[CHACHA_KEY_SIZE];
+        derive_key(password, key);
+        
+        if (!encrypt_data(comp_data, comp_len, &final_data, &final_len, key)) {
+            printf("Encryption failed\n");
+            free(comp_data);
+            return false;
+        }
+        printf("Encrypted size: %zu bytes\n", final_len);
+        free(comp_data);
+    } else {
+        final_data = comp_data;
+        final_len = comp_len;
+    }
+    
+    // Calculate required image size (2 pixels per byte)
+    size_t total_bytes = final_len + 4;  // Data + length
+    size_t required_pixels = (total_bytes * 4 + 2) / 3;  // 4 pixels per byte
+    int width = ceil(sqrt(required_pixels));
+    int height = (required_pixels + width - 1) / width;
+    printf("Creating %dx%d image\n", width, height);
+    
+    // Try to load existing image or create new one
+    Image* img = NULL;
+    if (access(output_file, F_OK) == 0) {
+        img = image_load(output_file);
+        if (img) {
+            printf("Loaded existing image %dx%d\n", img->width, img->height);
+            // Check if image is big enough
+            if ((size_t)img->width * img->height * 3 < required_pixels * 3) {
+                printf("Existing image too small, creating new one\n");
+                image_free(img);
+                img = NULL;
+            }
         }
     }
-    printf("Image pattern filled\n");
     
-    // Hide data in LSBs
-    if (!embed_data(img, data, data_len)) {
-        fprintf(stderr, "Failed to embed data\n");
-        free(data);
+    if (!img) {
+        img = image_create(width, height);
+        if (!img) {
+            printf("Failed to create image\n");
+            free(final_data);
+            return false;
+        }
+        printf("Created new image\n");
+        
+        // Fill with pattern
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int idx = (y * width + x) * 3;
+                img->data[idx] = (x + y) & 0xFC;     // R
+                img->data[idx+1] = (x * y) & 0xFC;   // G
+                img->data[idx+2] = (x - y) & 0xFC;   // B
+            }
+        }
+    }
+    
+    // Embed data
+    bool success = embed_data(img, final_data, final_len);
+    free(final_data);
+    
+    if (!success) {
+        printf("Failed to embed data\n");
         image_free(img);
         return false;
     }
     printf("Data embedded successfully\n");
     
-    // Save output
-    printf("Saving image to: %s\n", output_file);
-    if (!image_save(img, output_file)) {
-        fprintf(stderr, "Failed to save output image\n");
-        free(data);
-        image_free(img);
-        return false;
-    }
-    
-    printf("Data hidden successfully\n");
-    
-    free(data);
+    // Save PNG
+    success = image_save(img, output_file);
+    if (!success) printf("Failed to save image\n");
     image_free(img);
-    return true;
+    return success;
 }
 
 bool extract(const char* image_file, const char* output_file, const char* password) {
+    // Load PNG
     Image* img = image_load(image_file);
     if (!img) return false;
     
     // Extract data
-    size_t data_len;
-    unsigned char* data = extract_data(img, &data_len);
-    if (!data) {
+    unsigned char* comp_data;
+    size_t comp_len;
+    if (!extract_data(img, &comp_data, &comp_len)) {
         image_free(img);
         return false;
     }
+    image_free(img);
     
-    // Check if data is encrypted
-    bool is_encrypted = (data_len >= FERNET_PREFIX_LEN && 
-                        memcmp(data, FERNET_PREFIX, FERNET_PREFIX_LEN) == 0);
+    // Check if data is encrypted (has Fernet prefix)
+    bool is_encrypted = (comp_len >= FERNET_PREFIX_LEN && 
+                        memcmp(comp_data, FERNET_PREFIX, FERNET_PREFIX_LEN) == 0);
     
     // Fail if data is encrypted but no password provided
     if (is_encrypted && !password) {
-        free(data);
-        image_free(img);
+        free(comp_data);
         return false;
     }
     
-    // Decrypt if needed
+    // Decrypt if password provided
+    unsigned char* dec_data = NULL;
+    size_t dec_len;
+    
     if (password) {
         unsigned char key[CHACHA_KEY_SIZE];
         derive_key(password, key);
         
-        unsigned char* decrypted = NULL;
-        size_t decrypted_len = 0;
-        if (!decrypt_data(data, data_len, &decrypted, &decrypted_len, key)) {
-            free(data);
-            image_free(img);
+        if (!decrypt_data(comp_data, comp_len, &dec_data, &dec_len, key)) {
+            free(comp_data);
             return false;
         }
-        free(data);
-        data = decrypted;
-        data_len = decrypted_len;
+        free(comp_data);
+        comp_data = dec_data;
+        comp_len = dec_len;
     }
     
-    // Save to file
-    FILE* f = fopen(output_file, "wb");
-    if (!f) {
-        free(data);
-        image_free(img);
-        return false;
-    }
+    // Decompress data
+    uLong uncomp_bound = comp_len * 10;  // Conservative initial size
+    unsigned char* uncomp_data = NULL;
+    int ret;
     
-    if (fwrite(data, 1, data_len, f) != data_len) {
-        fclose(f);
-        free(data);
-        image_free(img);
-        return false;
-    }
+    do {
+        uncomp_bound *= 2;
+        unsigned char* new_data = realloc(uncomp_data, uncomp_bound);
+        if (!new_data) {
+            free(uncomp_data);
+            free(comp_data);
+            return false;
+        }
+        uncomp_data = new_data;
+        
+        uLong uncomp_len = uncomp_bound;
+        ret = uncompress(uncomp_data, &uncomp_len, comp_data, comp_len);
+        
+        if (ret == Z_OK) {
+            // Write to output file
+            FILE* f = fopen(output_file, "wb");
+            if (!f) {
+                free(uncomp_data);
+                free(comp_data);
+                return false;
+            }
+            
+            bool success = fwrite(uncomp_data, 1, uncomp_len, f) == uncomp_len;
+            fclose(f);
+            free(uncomp_data);
+            free(comp_data);
+            return success;
+        }
+    } while (ret == Z_BUF_ERROR);
     
-    fclose(f);
-    free(data);
-    image_free(img);
-    
-    printf("Data extracted successfully\n");
-    return true;
+    free(uncomp_data);
+    free(comp_data);
+    return false;
 } 
